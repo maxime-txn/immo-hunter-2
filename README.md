@@ -1,5 +1,15 @@
 # 🏠 Immo-Hunter — Analyse du marché immobilier Paris 16e
 
+> **2 420 annonces scrapées** + **38 523 transactions DVF** · Analyse SQL + Dashboard Power BI · Surévaluation moyenne : **+5.4%** · Modèle ML (**R² = 0.88**)
+
+---
+
+## 💡 Innovation du projet
+
+Utilisation d'un LLM (Claude, Anthropic) pour transformer des descriptions immobilières non structurées en données exploitables — **50 features extraites automatiquement** (étage, DPE, exposition, état général, quartier, points forts/faibles…) à partir de texte libre.
+
+---
+
 ## Pourquoi ce projet ?
 
 Je suis étudiant en M1 Data Science & BI à EDC Paris et je cherche une alternance en Data Analyst / BI Analyst pour mon M2 (septembre 2026). J'ai voulu construire un projet de bout en bout, de la collecte de données jusqu'à la visualisation, sur un sujet concret : **le marché immobilier dans le 16e arrondissement de Paris**.
@@ -47,7 +57,12 @@ J'ai construit plusieurs analyses à partir des vues SQL :
 
 ### 5. Visualisation Power BI
 
-J'ai exporté les résultats en CSV et construit un **dashboard Power BI** avec 4 graphiques pour visualiser les analyses.
+J'ai exporté les résultats en CSV et construit un **dashboard Power BI** avec 4 graphiques :
+
+- **Surévaluation : prix demandé vs prix réel (€/m²)** — courbe DVF + frais (2020-2025) comparée au prix moyen des annonces. On voit le marché passer au-dessus puis en dessous du prix demandé à partir de 2023.
+- **Marge de négociation par typologie (nb pièces)** — barres groupées montrant l'écart entre prix demandé et prix réel de vente, de 1 à 7 pièces.
+- **Prix demandé vs prix estimé (ML) par typologie** — les prédictions du modèle confrontées aux prix affichés, par nombre de pièces.
+- **Impact du DPE sur le prix au m²** — évolution du prix selon la lettre DPE (A → G), montrant l'écart de valorisation entre biens performants et passoires énergétiques.
 
 ![Dashboard Power BI](screenshots/dashboard_powerbi.png)
 
@@ -65,6 +80,10 @@ J'ai comparé deux modèles :
 Le modèle est ensuite appliqué sur les annonces en ligne pour estimer si le prix demandé est cohérent avec le marché.
 
 ![Output ML](screenshots/terminal_ml.png)
+
+### Limites du modèle
+
+Le modèle est volontairement simple (3 features, régression linéaire). Le R² de 0.88 est élevé car la surface explique l'essentiel du prix total, mais le modèle ne capte pas les critères qualitatifs qui font la vraie différence : l'étage, la vue, le DPE, l'état du bien, la rue exacte. Pour améliorer la précision, il faudrait intégrer les features extraites par l'enrichissement IA (DPE, étage, exposition, état général) — c'est une piste d'amélioration pour une prochaine version.
 
 ---
 
@@ -145,7 +164,7 @@ immo-hunter/
 ## Installation
 
 ```bash
-git clone https://github.com/maxime-txn/immo-hunter.git
+git clone https://github.com/ton-username/immo-hunter.git
 cd immo-hunter
 python3 -m venv venv
 source venv/bin/activate
