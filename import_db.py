@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Importe les CSV annonces + DVF dans PostgreSQL."""
 import csv
+import os
 import sys
 
 try:
@@ -248,12 +249,31 @@ def print_stats(cur):
 
 
 def main():
+    import glob
+
+    # Découverte automatique des fichiers
+    ann_files = sorted(glob.glob("output/annonces_*.csv"), key=os.path.getmtime)
+    ann_files = [f for f in ann_files if "_enrichi" not in f and "_prediction" not in f]
+    dvf_files = sorted(glob.glob("output/dvf_*.csv"), key=os.path.getmtime)
+
+    if not ann_files:
+        print("Erreur : aucun CSV annonces dans output/")
+        return
+    if not dvf_files:
+        print("Erreur : aucun CSV DVF dans output/")
+        return
+
+    ann_path = ann_files[-1]
+    dvf_path = dvf_files[-1]
+    print("Annonces : {}".format(ann_path))
+    print("DVF      : {}".format(dvf_path))
+
     conn = connect()
     cur = conn.cursor()
 
     create_tables(cur)
-    import_annonces(cur, "output/annonces_paris-16eme.csv")
-    import_dvf(cur, "output/dvf_paris16.csv")
+    import_annonces(cur, ann_path)
+    import_dvf(cur, dvf_path)
     enrich_sql(cur)
     print_stats(cur)
 
