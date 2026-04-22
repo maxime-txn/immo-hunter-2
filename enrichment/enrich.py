@@ -3,7 +3,7 @@
 Enrichissement IA — Claude analyse chaque description et extrait 30+ features.
 Lit le CSV brut, produit un CSV enrichi pret pour PostgreSQL.
 
-Usage: python3.12 enrichment/enrich.py
+Usage: python enrichment/enrich.py
 Prerequis: export ANTHROPIC_API_KEY=sk-ant-xxx
 """
 import csv
@@ -16,59 +16,107 @@ import glob
 try:
     from anthropic import Anthropic
 except ImportError:
-    print("pip3.12 install anthropic --break-system-packages")
+    print("pip install anthropic")
     sys.exit(1)
 
-PROMPT = """Analyse cette annonce immobiliere et extrais les informations en JSON.
-Reponds UNIQUEMENT avec un objet JSON, sans texte avant ou apres.
+# Prompt optimisé : 50+ features normalisées pour SQL
+PROMPT = """Tu es un expert immobilier. Analyse cette annonce et extrais les informations en JSON strict.
+Reponds UNIQUEMENT avec un objet JSON valide, sans texte avant ou apres.
 
-Annonce:
+REGLES :
+- Booleens : true/false uniquement (jamais null pour un booleen)
+- null si l'info n'est pas mentionnee dans l'annonce
+- exposition : "nord", "sud", "est", "ouest", "nord-est", "nord-ouest", "sud-est", "sud-ouest", "traversant" ou null
+- DPE/GES : une seule lettre majuscule A-G ou null
+- etat_general : "neuf", "refait_a_neuf", "renove", "tres_bon", "bon", "correct", "a_rafraichir", "a_renover" ou null
+- type_chauffage : "individuel_gaz", "individuel_electrique", "collectif_gaz", "collectif_electrique", "pompe_a_chaleur", "fioul", "bois" ou null
+- vue_type : "jardin", "parc", "seine", "monument", "ville", "cour", "rue", "degagee" ou null
+- etage : nombre entier (0 = RDC) ou null
+- Nombres : entiers uniquement
+
+Annonce :
 Titre: {titre}
-Prix: {prix} EUR
-Surface: {surface} m2
-Pieces: {pieces}
-Chambres: {chambres}
-Type: {type_bien}
-Description: {description}
+Prix: {prix} EUR | Surface: {surface} m2 | Pieces: {pieces} | Chambres: {chambres} | Type: {type_bien}
 
-Extrais ces champs (null si inconnu):
+Description:
+{description}
+
+JSON :
 {{
   "etage": null,
+  "nb_etages_immeuble": null,
   "dernier_etage": false,
+  "rez_de_chaussee": false,
+  "hauteur_sous_plafond_cm": null,
   "ascenseur": false,
+
+  "nb_sdb": null,
+  "nb_wc": null,
+  "surface_sejour_m2": null,
+
   "balcon": false,
+  "nb_balcons": null,
   "terrasse": false,
+  "surface_terrasse_m2": null,
+  "loggia": false,
+  "roof_top": false,
   "jardin": false,
   "surface_jardin_m2": null,
   "piscine": false,
+
   "garage": false,
   "nb_parking": null,
   "cave": false,
   "sous_sol": false,
+
   "cheminee": false,
   "parquet": false,
   "cuisine_equipee": false,
+  "cuisine_type": null,
   "double_vitrage": false,
+  "triple_vitrage": false,
+  "climatisation": false,
+  "type_chauffage": null,
+
+  "digicode": false,
+  "interphone": false,
+  "gardien": false,
+  "residence_securisee": false,
+
   "exposition": null,
-  "luminosite": null,
+  "lumineux": false,
   "calme": false,
   "vue_degagee": false,
-  "vis_a_vis": null,
+  "vue_type": null,
+  "vis_a_vis": false,
+  "etage_eleve": false,
+
   "etat_general": null,
   "travaux_necessaires": false,
   "annee_construction": null,
-  "style_architecture": null,
+
   "dpe_lettre": null,
+  "dpe_valeur": null,
   "ges_lettre": null,
-  "proche_gare": false,
-  "distance_gare_min": null,
+  "ges_valeur": null,
+
+  "proche_transports": false,
+  "distance_metro_min": null,
+  "nom_station_metro": null,
+  "ligne_metro": null,
   "proche_commerces": false,
   "proche_ecoles": false,
   "quartier": null,
-  "copropriete": null,
+
+  "copropriete": false,
+  "nb_lots_copro": null,
   "charges_copro_mois": null,
   "taxe_fonciere_an": null,
+  "travaux_copro_prevus": false,
+
   "meuble": false,
+  "mandat_exclusif": false,
+  "viager": false,
   "coup_de_coeur": false,
   "points_forts": [],
   "points_faibles": []
@@ -91,7 +139,32 @@ def save_csv(rows, path):
         w.writerows(rows)
 
 
+def normalize_value(key, value):
+    """Normalise les valeurs pour compatibilité PostgreSQL."""
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value) if value else ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    # Normaliser exposition
+    if key == "exposition" and isinstance(value, str):
+        return value.lower().strip()
+    # Normaliser etat_general
+    if key == "etat_general" and isinstance(value, str):
+        return value.lower().strip().replace(" ", "_").replace("à", "a").replace("é", "e").replace("è", "e")
+    # Normaliser type_chauffage, vue_type
+    if key in ("type_chauffage", "vue_type") and isinstance(value, str):
+        return value.lower().strip().replace(" ", "_").replace("à", "a").replace("é", "e")
+    # DPE/GES lettre : toujours majuscule
+    if key in ("dpe_lettre", "ges_lettre") and isinstance(value, str):
+        v = value.strip().upper()
+        return v if len(v) == 1 and v in "ABCDEFG" else ""
+    return value
+
+
 def enrich_row(client, row):
+    """Enrichit une annonce via Claude API."""
     desc = row.get("description", "")
     if not desc or len(desc) < 30:
         return {}
@@ -103,33 +176,29 @@ def enrich_row(client, row):
         pieces=row.get("nb_pieces", ""),
         chambres=row.get("nb_chambres", ""),
         type_bien=row.get("type_bien", ""),
-        description=desc[:2000],
+        description=desc[:3000],
     )
 
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=800,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
         text = resp.content[0].text.strip()
-        # Nettoyer si necessaire
+        # Nettoyer markdown si présent
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         data = json.loads(text)
-        # Convertir les listes en strings pour CSV
-        for k, v in data.items():
-            if isinstance(v, list):
-                data[k] = ", ".join(str(x) for x in v)
-            elif isinstance(v, bool):
-                data[k] = "true" if v else "false"
-            elif v is None:
-                data[k] = ""
-        return data
+        # Normaliser toutes les valeurs
+        return {k: normalize_value(k, v) for k, v in data.items()}
+    except json.JSONDecodeError as e:
+        print("  Erreur JSON: {}".format(str(e)[:60]))
+        return {}
     except Exception as e:
-        print("  Erreur IA: {}".format(str(e)[:50]))
+        print("  Erreur API: {}".format(str(e)[:120]))
         return {}
 
 
@@ -139,10 +208,11 @@ def main():
         print("Erreur: export ANTHROPIC_API_KEY=sk-ant-xxx")
         sys.exit(1)
 
-    # Trouver le CSV le plus recent
+    # Trouver le CSV le plus récent (exclure enrichi et prediction)
     csvs = glob.glob("output/annonces_*.csv")
+    csvs = [c for c in csvs if "_enrichi" not in c and "_prediction" not in c]
     if not csvs:
-        print("Erreur: aucun CSV dans output/. Lance d'abord main.py")
+        print("Erreur: aucun CSV dans output/")
         sys.exit(1)
 
     csv_path = max(csvs, key=os.path.getmtime)
@@ -154,48 +224,36 @@ def main():
     with_desc = [r for r in rows if r.get("description") and len(r["description"]) > 30]
     print("{} avec description a enrichir".format(len(with_desc)))
 
-    # Priorite: petites surfaces d'abord (studios, 2P...)
-    def priority(r):
-        surface = r.get("surface_m2", "")
-        try:
-            return float(surface)
-        except (ValueError, TypeError):
-            return 9999
-
-    rows.sort(key=priority)
-    petits = [r for r in rows if priority(r) < 50]
-    print("{} petites surfaces (<50m2) en priorite".format(len(petits)))
-
     if not with_desc:
         print("Aucune description a enrichir.")
         sys.exit(0)
 
     client = Anthropic(api_key=api_key)
     enriched = 0
+    errors = 0
     out_path = csv_path.replace(".csv", "_enrichi.csv")
 
-    # Reprendre si un fichier enrichi existe deja
+    # Reprendre si un fichier enrichi existe déjà
     already_done = set()
     if os.path.exists(out_path):
         existing = load_csv(out_path)
         for r in existing:
-            if r.get("etage") or r.get("ascenseur") or r.get("balcon"):
-                url = r.get("url", "")
-                titre = r.get("titre", "")
-                if url:
-                    already_done.add(url)
-                elif titre:
-                    already_done.add(titre)
+            # Considérer enrichi si au moins un champ IA est rempli
+            if any(r.get(k) not in ("", None) for k in
+                   ("etage", "ascenseur", "balcon", "dpe_lettre", "etat_general")):
+                key = r.get("url") or r.get("titre", "")
+                if key:
+                    already_done.add(key)
         if already_done:
-            # Charger les donnees enrichies existantes
             rows = existing
             print("{} deja enrichies, reprise...".format(len(already_done)))
+
+    start = time.time()
 
     for i, row in enumerate(rows):
         if not row.get("description") or len(row["description"]) < 30:
             continue
 
-        # Skip si deja enrichi
         key = row.get("url") or row.get("titre", "")
         if key in already_done:
             enriched += 1
@@ -206,24 +264,27 @@ def main():
             row.update(features)
             enriched += 1
             already_done.add(key)
+        else:
+            errors += 1
 
+        # Progression
         if (i + 1) % 10 == 0:
-            print("  {}/{} enrichies...".format(enriched, i + 1))
+            elapsed = time.time() - start
+            rate = (enriched / elapsed * 60) if elapsed > 0 else 0
+            print("  {}/{} enrichies ({} erreurs) — {:.0f}/min".format(
+                enriched, i + 1, errors, rate))
 
-        # Sauvegarde toutes les 20 enrichissements
-        if enriched % 20 == 0 and enriched > 0:
+        # Sauvegarde toutes les 20
+        if enriched > 0 and enriched % 20 == 0:
             save_csv(rows, out_path)
             print("  [sauvegarde {} annonces]".format(enriched))
 
-        time.sleep(0.5)
+        time.sleep(0.3)
 
-    print("\n{} annonces enrichies sur {}".format(enriched, len(rows)))
+    print("\n{} annonces enrichies sur {} ({} erreurs)".format(enriched, len(rows), errors))
 
-    # Sauvegarde finale
     save_csv(rows, out_path)
     print("Exporte: {}".format(out_path))
-    print("\nPret pour PostgreSQL: COPY annonces FROM '{}' DELIMITER ';' CSV HEADER;".format(
-        os.path.abspath(out_path)))
 
 
 if __name__ == "__main__":

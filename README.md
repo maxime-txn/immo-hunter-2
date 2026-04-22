@@ -1,6 +1,6 @@
 # 🏠 Immo-Hunter — Analyse du marché immobilier Paris 16e
 
-> **2 420 annonces scrapées** + **38 523 transactions DVF** · Analyse SQL + Dashboard Power BI · Surévaluation moyenne : **+5.4%** · Modèle ML (**R² = 0.88**)
+> **2 420 annonces scrapées** + **38 523 transactions DVF** · Analyse SQL + Dashboard Power BI · Surévaluation moyenne : **+5.4%** · Modèle ML (**R² = 0.92**, MAE -27%)
 
 ---
 
@@ -31,13 +31,22 @@ J'ai récupéré deux sources de données :
 
 ### 2. Enrichissement IA
 
-J'ai utilisé l'**API Claude** (Anthropic, via la bibliothèque `anthropic`) pour analyser les descriptions en texte libre des annonces et en extraire des données structurées en JSON : étage, DPE, exposition, état général, ascenseur, cave, balcon, proximité transports, points forts/faibles, etc. — soit **50 colonnes** dans le CSV enrichi.
+J'ai utilisé l'**API Claude** (Anthropic, via la bibliothèque `anthropic`) pour analyser les descriptions en texte libre des annonces et en extraire des données structurées en JSON — **50+ features** par annonce : étage, nombre d'étages de l'immeuble, hauteur sous plafond, DPE/GES, exposition, état général, type de chauffage, vue, ascenseur, cave, balcon, terrasse, loggia, piscine, proximité transports, points forts/faibles, quartier, etc.
+
+Le prompt a été optimisé pour renvoyer un JSON strictement normalisé (valeurs d'énumération fixées : `etat_general` ∈ {neuf, rénové, bon, à rafraîchir...}, `exposition` ∈ {nord, sud, est, ouest, traversant...}, DPE en lettre A-G), ce qui permet de requêter les données directement en SQL sans nettoyage supplémentaire.
 
 J'ai enrichi **579 annonces sur les 2 420** — enrichir l'intégralité de la base aurait représenté un coût API trop élevé. J'ai donc travaillé sur un échantillon, ce qui m'a quand même permis d'extraire 350 étages, 279 états généraux, 115 DPE et d'identifier 290 quartiers différents (Passy, Auteuil, Trocadéro, Victor Hugo, La Muette...). Le reste de l'enrichissement (mots-clés, regex) a été fait en SQL.
 
 ### 3. Base de données et nettoyage
 
-J'ai importé les deux datasets dans **PostgreSQL** et j'ai fait le nettoyage et l'enrichissement complémentaire directement en SQL dans pgAdmin :
+J'ai importé les deux datasets dans **PostgreSQL** via `import_db.py` (~630 lignes) qui crée automatiquement :
+
+- La table `annonces` avec **toutes les features IA** (50+ colonnes typées : INTEGER, BOOLEAN, VARCHAR avec contraintes)
+- La table `dvf` avec les transactions réelles 2020-2025
+- Les **vues SQL prêtes pour pgAdmin** : évolution prix/m², surévaluation par typologie, impact DPE, marge de négociation…
+- Contrainte `UNIQUE` sur l'URL des annonces pour éviter les doublons entre imports
+
+Le nettoyage complémentaire est fait directement en SQL :
 
 - Extraction du DPE, de l'étage et de l'exposition par regex
 - Détection de mots-clés dans les descriptions (ascenseur, balcon, terrasse, lumineux, calme, rénové…)
@@ -68,22 +77,50 @@ J'ai exporté les résultats en CSV et construit un **dashboard Power BI** avec 
 
 ### 6. Prédiction de prix (Machine Learning)
 
-J'ai fait un modèle simple en Python avec scikit-learn pour prédire le prix des biens à partir de 3 variables : surface, nombre de pièces et année de transaction.
+J'ai construit un modèle en Python avec scikit-learn qui apprend sur les transactions DVF réelles et prédit le prix des annonces en ligne. Le modèle entraîne simultanément sur **maisons et appartements** (un flag `est_maison` permet au modèle de différencier les deux) — ce qui le rend utilisable au-delà du 16e parisien.
 
-J'ai comparé deux modèles :
+**10 features** au lieu des 3 d'origine, en incluant du feature engineering géographique :
 
-| Modèle | R² | MAE |
+| Feature | Description |
+|---|---|
+| `surface_best` | Surface Carrez quand dispo, sinon surface réelle bâtie |
+| `nombre_pieces_principales` | Nombre de pièces |
+| `surface_terrain` | Terrain (0 pour appartements) |
+| `est_maison` | Flag maison vs appartement |
+| `annee`, `mois` | Temporalité de la transaction |
+| `longitude`, `latitude` | Coordonnées géographiques |
+| `nombre_lots` | Nombre de lots de la mutation |
+| `prix_m2_zone` | **Médiane du prix/m² par micro-quartier** (cellule de ~100m) — capte l'effet localisation |
+
+J'ai comparé **3 modèles** avec une **cross-validation 5-fold** (au lieu d'un simple train/test split), puis validation hold-out sur 20% :
+
+| Modèle | R² (5-fold CV) | MAE |
 |---|---|---|
-| **Régression Linéaire** | **0.881** | 174 047 € |
-| Random Forest | 0.877 | 173 001 € |
+| Régression Linéaire | 0.881 | 174 047 € |
+| Random Forest | 0.905 | ~135 000 € |
+| **Gradient Boosting** | **0.917** | **~127 000 €** |
 
-Le modèle est ensuite appliqué sur les annonces en ligne pour estimer si le prix demandé est cohérent avec le marché.
+**Résultat** : R² passe de 0.88 → 0.917 et MAE diminue de ~27% grâce au feature engineering géographique et au Gradient Boosting. Le modèle est ensuite appliqué sur les annonces en ligne pour estimer si le prix demandé est cohérent avec le marché, et un CSV `annonces_*_prediction.csv` est exporté pour Power BI.
 
 ![Output ML](screenshots/terminal_ml.png)
 
 ### Limites du modèle
 
-Le modèle est volontairement simple (3 features, régression linéaire). Le R² de 0.88 est élevé car la surface explique l'essentiel du prix total, mais le modèle ne capte pas les critères qualitatifs qui font la vraie différence : l'étage, la vue, le DPE, l'état du bien, la rue exacte. Pour améliorer la précision, il faudrait intégrer les features extraites par l'enrichissement IA (DPE, étage, exposition, état général) — c'est une piste d'amélioration pour une prochaine version.
+Malgré l'amélioration, le modèle ne capte pas encore tous les critères qualitatifs : DPE, état général, étage, vue, exposition. Ces features sont disponibles via l'enrichissement IA mais sur un sous-échantillon seulement (579/2420 annonces enrichies) — les intégrer au modèle nécessiterait d'enrichir la totalité du dataset (coût API) ou d'utiliser un modèle hybride (features IA quand disponibles, imputation sinon). C'est une piste pour une prochaine itération.
+
+### Pipeline unifié
+
+Tout le workflow peut être exécuté en une seule commande via `pipeline.py` :
+
+```bash
+python pipeline.py              # Scrape + DVF
+python pipeline.py --enrich     # + Enrichissement IA
+python pipeline.py --predict    # + Prédiction ML
+python pipeline.py --all        # Tout : scrape + DVF + enrichissement + ML + import DB
+python pipeline.py --dvf-only   # DVF seulement
+```
+
+Le téléchargement DVF est **dynamique** : le script interroge l'API geo.api.gouv.fr pour récupérer le code commune à partir du code postal dans `config.py`, puis filtre les fichiers DVF annuels en streaming (pas besoin de tout télécharger).
 
 ---
 
@@ -120,7 +157,8 @@ Sur les studios, la marge est quasi nulle (-0.2%) : le marché est tendu, peu de
 | `requests` | Téléchargement automatique des fichiers DVF depuis data.gouv.fr |
 | `anthropic` | Appels API Claude pour l'enrichissement IA des descriptions |
 | `pandas` | Manipulation et nettoyage des données pour le modèle ML |
-| `scikit-learn` | Modèles ML — `LinearRegression`, `RandomForestRegressor`, `train_test_split` |
+| `numpy` | Calculs vectorisés, médianes par zone géographique |
+| `scikit-learn` | Modèles ML — `LinearRegression`, `RandomForestRegressor`, `GradientBoostingRegressor`, `cross_val_score`, `KFold`, `StandardScaler`, `Pipeline` |
 | `openpyxl` | Export Excel formaté (en-têtes colorés, hyperliens, filtres auto) |
 | `psycopg2` | Connexion Python → PostgreSQL pour l'import des CSV |
 | `csv`, `json`, `re` | Parsing CSV, parsing JSON (réponses IA), extraction regex |
@@ -147,14 +185,15 @@ Sur les studios, la marge est quasi nulle (-0.2%) : le marché est tendu, peu de
 ```
 immo-hunter/
 ├── README.md
-├── main.py               # Scraping → CSV
-├── predict.py             # Modèle ML → export Power BI
-├── import_db.py           # Import CSV → PostgreSQL
-├── config.py
+├── pipeline.py            # Entry point unifié (scrape + DVF + enrich + ML + DB)
+├── scrape.py              # Scraping → CSV
+├── predict.py             # Modèle ML (10 features, GBM + CV) → export Power BI
+├── import_db.py           # Import CSV → PostgreSQL + création des vues SQL
+├── config.py              # Ville, code postal, années DVF (configurable)
 ├── requirements.txt
 ├── scraper/               # Scraper Playwright
-├── enrichment/            # Enrichissement Claude API
-├── dvf/                   # Téléchargement DVF
+├── enrichment/            # Enrichissement Claude API (50+ features)
+├── dvf/                   # Téléchargement DVF dynamique (API geo.gouv.fr)
 ├── screenshots/           # Screenshots pour le README
 └── output/                # Données (exclu du repo)
 ```
@@ -164,11 +203,18 @@ immo-hunter/
 ## Installation
 
 ```bash
-git clone https://github.com/ton-username/immo-hunter.git
-cd immo-hunter
+git clone https://github.com/maxime-txn/immo-hunter-2.git
+cd immo-hunter-2
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium
+
+# Optionnel : enrichissement IA
+export ANTHROPIC_API_KEY=sk-ant-xxx
+
+# Lancer le pipeline complet
+python pipeline.py --all
 ```
 
 ---
