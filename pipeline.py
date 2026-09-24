@@ -10,7 +10,7 @@ Immo-Hunter : pipeline de bout en bout.
 Module optionnel « annonces en ligne » :
     python pipeline.py --annonces-collecte          # scraper les annonces (config.py)
     python pipeline.py --annonces-enrichissement    # extraire 50+ infos des descriptions (API Claude)
-    python pipeline.py --annonces-analyse FICHIER   # verdict sur chaque annonce d'un CSV
+    python pipeline.py --annonces-analyse           # verdict par annonce + croisement avec DVF
 """
 import argparse
 import glob
@@ -77,7 +77,8 @@ def main():
     p.add_argument("--modele", action="store_true")
     p.add_argument("--annonces-collecte", action="store_true")
     p.add_argument("--annonces-enrichissement", action="store_true")
-    p.add_argument("--annonces-analyse", metavar="FICHIER_CSV")
+    p.add_argument("--annonces-analyse", metavar="FICHIER_CSV", nargs="?", const="auto",
+                   help="sans fichier : prend le dernier CSV de data/annonces/ (enrichi si possible)")
     a = p.parse_args()
 
     print(f"Immo-Hunter · zone : {config.NOM_ZONE} (département {config.DEPARTEMENT})")
@@ -95,8 +96,17 @@ def main():
         enrichir()
     if a.annonces_analyse:
         from immohunter.annonces.analyse_lot import analyser
-        sortie = a.annonces_analyse.replace(".csv", "_verdicts.csv")
-        analyser(a.annonces_analyse, config.FICHIER_VENTES, config.DOSSIER_MODELES, sortie)
+        fichier = a.annonces_analyse
+        if fichier == "auto":
+            candidats = [f for f in glob.glob(os.path.join(config.OUTPUT_DIR, "annonces_*.csv"))
+                         if "_verdicts" not in f]
+            if not candidats:
+                raise SystemExit("Aucun CSV d'annonces : lancer d'abord --annonces-collecte")
+            enrichis = [f for f in candidats if "_enrichi" in f]
+            fichier = max(enrichis or candidats, key=os.path.getmtime)
+        etape("5. Croisement annonces × ventes réelles")
+        sortie = fichier.replace(".csv", "_verdicts.csv")
+        analyser(fichier, config.FICHIER_VENTES, config.DOSSIER_MODELES, sortie)
     if not any(vars(a).values()):
         p.print_help()
 

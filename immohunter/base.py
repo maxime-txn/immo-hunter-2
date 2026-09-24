@@ -15,6 +15,12 @@ def connexion(fichier_ventes):
     return con
 
 
+def ajouter_annonces(con, fichier_annonces_analysees):
+    """Rend les annonces analysées (sortie de analyse_lot) interrogeables en SQL : table `annonces`."""
+    con.execute("CREATE OR REPLACE VIEW annonces AS SELECT * FROM "
+                f"read_csv('{fichier_annonces_analysees}', delim=';', header=true)")
+
+
 def requete(con, nom, **parametres):
     sql = (DOSSIER_SQL / f"{nom}.sql").read_text(encoding="utf-8")
     return con.execute(sql, parametres or None).df()

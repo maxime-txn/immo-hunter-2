@@ -3,6 +3,7 @@ Immo-Hunter : application web.
 Lancer en local : streamlit run app.py
 """
 import json
+import os
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -71,8 +72,18 @@ st.markdown(
     f"**{entonnoir['ventes_finales']:,} ventes réelles** enregistrées chez les notaires "
     f"({config.NOM_ZONE}, jusqu'à {date_max:%m/%Y}).".replace(",", " "))
 
-onglet_annonce, onglet_marche, onglet_methode = st.tabs(
-    ["Vérifier une annonce", "Le marché", "Comment ça marche"])
+# L'onglet « Annonces du moment » n'apparaît que si le module annonces a été lancé
+FICHIER_CROISEMENT = "data/croisement_annonces.csv"
+FICHIER_RESUME_ANNONCES = f"{config.DOSSIER_RAPPORTS}/croisement_annonces.json"
+avec_annonces = os.path.exists(FICHIER_CROISEMENT) and os.path.exists(FICHIER_RESUME_ANNONCES)
+noms_onglets = ["Vérifier une annonce", "Le marché"]
+if avec_annonces:
+    noms_onglets.append("Annonces du moment")
+noms_onglets.append("Comment ça marche")
+onglets = st.tabs(noms_onglets)
+onglet_annonce, onglet_marche = onglets[0], onglets[1]
+onglet_annonces_moment = onglets[2] if avec_annonces else None
+onglet_methode = onglets[-1]
 
 # ── 1. Vérifier une annonce ──────────────────────────────────
 with onglet_annonce:
@@ -195,6 +206,44 @@ with onglet_marche:
                                      gridcolor="#e4e3df"), separators=", ",
                           plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(bar, width="stretch")
+
+
+# ── Annonces du moment : croisement annonces en ligne × ventes réelles ──
+if onglet_annonces_moment is not None:
+    with onglet_annonces_moment:
+        resume = lire_json(FICHIER_RESUME_ANNONCES)
+        croisement = pd.read_csv(FICHIER_CROISEMENT)
+        st.markdown(
+            f"Les ventes notariales sont publiées avec retard : la dernière vente connue date du "
+            f"**{pd.Timestamp(resume['derniere_vente_dvf']):%d/%m/%Y}**. Les annonces, collectées le "
+            f"**{pd.Timestamp(resume['date_collecte_annonces']):%d/%m/%Y}**, montrent le marché d'aujourd'hui. "
+            "On compare les deux.")
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Annonces analysées", f"{resume['nb_annonces']:,}".replace(",", " "))
+        a2.metric("Au-dessus du marché", pct(resume["part_annonces_au_dessus_pct"]),
+                  help="Part des annonces classées « au-dessus du marché » ou « surévaluées ».")
+        a3.metric("Écart médian avec l'estimation", pct(resume["ecart_median_vs_estimation_pct"], True))
+        c = croisement.sort_values("ecart_affiche_vs_vendu_pct")
+        bar = go.Figure(go.Bar(
+            x=c["ecart_affiche_vs_vendu_pct"], y=c["secteur"], orientation="h",
+            marker_color=[ROUGE if x > 0 else BLEU for x in c["ecart_affiche_vs_vendu_pct"]],
+            customdata=c[["prix_m2_affiche", "prix_m2_vendu", "nb_annonces"]],
+            hovertemplate=("%{y} : %{x:+.1f} %<br>affiché %{customdata[0]:,.0f} €/m² · vendu "
+                           "%{customdata[1]:,.0f} €/m²<br>%{customdata[2]} annonces<extra></extra>")))
+        bar.update_layout(title=dict(text="Prix au m² affiché aujourd'hui vs prix vendu (12 derniers mois publiés)", x=0),
+                          height=34 * len(c) + 90, margin=dict(l=0, r=0, t=50, b=0), separators=", ",
+                          xaxis=dict(ticksuffix=" %", zeroline=True, zerolinecolor="#52514e",
+                                     gridcolor="#e4e3df"), plot_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(bar, width="stretch")
+        st.dataframe(c.rename(columns={
+            "secteur": "Secteur", "nb_annonces": "Annonces", "nb_ventes": "Ventes (12 mois)",
+            "prix_m2_affiche": "Affiché €/m²", "prix_m2_vendu": "Vendu €/m²",
+            "ecart_affiche_vs_vendu_pct": "Écart affiché / vendu (%)",
+            "ecart_median_vs_estimation_pct": "Écart vs estimation (%)",
+            "part_annonces_au_dessus_pct": "Au-dessus du marché (%)"}),
+            hide_index=True, width="stretch")
+        st.caption("Un écart positif mêle la marge de négociation et l'évolution du marché depuis les "
+                   "dernières ventes publiées. Les annonces ne sont pas republiées : seuls ces agrégats le sont.")
 
 # ── 3. Comment ça marche ─────────────────────────────────────
 with onglet_methode:

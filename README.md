@@ -10,7 +10,7 @@ Pour n'importe quel appartement à Paris, l'outil répond à trois questions :
 2. **Le marché de ce secteur monte-t-il ou baisse-t-il ?**
 3. **Combien vaut ce bien ?** Une estimation, une fourchette et les ventes réelles comparables.
 
-| **142 844** ventes notariales analysées | **12,2 %** d'erreur médiane | **77,3 %** des prix réels dans la fourchette annoncée | **7** tests automatiques |
+| **142 844** ventes notariales analysées | **12,2 %** d'erreur médiane | **77,3 %** des prix réels dans la fourchette annoncée | **8** tests automatiques |
 |:---:|:---:|:---:|:---:|
 | Paris, 2021–2025 | contre 14,2 % pour la méthode simple | objectif : 80 % | pytest |
 
@@ -34,10 +34,12 @@ flowchart LR
     B --> C[("Base analytique<br/>DuckDB + SQL")]
     C --> D["Modèle de prix<br/>scikit-learn"]
     E["Annonces en ligne<br/>Playwright"] --> F["Enrichissement IA<br/>API Claude"]
-    F --> G["Verdict par annonce"]
+    F --> G["Croisement annonces<br/>× ventes réelles"]
+    C --> G
     D --> G
     C --> H["Tendances de marché"]
     D --> I["Application web<br/>Streamlit"]
+    G --> I
     H --> I
 ```
 
@@ -112,6 +114,7 @@ J'utilise **DuckDB**, une base analytique qui lit directement le fichier de vent
 | [`tendance_12_mois.sql`](sql/tendance_12_mois.sql) | Le marché monte-t-il ou baisse-t-il sur 12 mois ? | `CASE WHEN`, `INTERVAL`, agrégats `FILTER`, `RANK()` |
 | [`ventes_comparables.sql`](sql/ventes_comparables.sql) | Quelles ventes réelles ressemblent à ce bien ? | calcul de distance GPS (haversine), paramètres |
 | [`centres_codes_postaux.sql`](sql/centres_codes_postaux.sql) | Où placer une annonce dont on ne connaît que le code postal ? | `ROW_NUMBER() OVER (PARTITION BY …)` |
+| [`croisement_annonces_dvf.sql`](sql/croisement_annonces_dvf.sql) | Le prix affiché aujourd'hui est-il au-dessus du prix réellement vendu ? | 3 CTE, `JOIN … USING`, agrégat conditionnel `AVG(CASE WHEN …)` |
 
 ### 5. Le modèle de prix
 
@@ -145,7 +148,20 @@ J'ai retenu le **gradient boosting** : c'est le plus précis, et il sait aussi c
 
 ![Précision du modèle](rapports/precision_modele.png)
 
-### 6. Restitution : l'application web
+### 6. Croiser annonces et ventes réelles
+
+**Objectif :** combler le retard de DVF. Les ventes notariales sont la source la plus fiable, mais elles sont publiées tard : au 24/09/2026, la dernière vente publiée date du **31/12/2025**, soit environ **9 mois** de décalage. Les annonces en ligne, elles, montrent le marché d'aujourd'hui.
+
+Le croisement apporte deux choses :
+
+- **pour chaque annonce**, un verdict (sous-évaluée, au prix du marché, surévaluée) en comparant le prix demandé à l'estimation du modèle ;
+- **pour chaque arrondissement**, l'écart entre le prix affiché aujourd'hui et le prix réellement vendu sur les 12 derniers mois publiés. C'est un indicateur avancé du marché, qui mêle la marge de négociation et la tendance récente.
+
+Le croisement est fait en SQL ([`croisement_annonces_dvf.sql`](sql/croisement_annonces_dvf.sql)) : une CTE par source, puis une jointure par secteur. Les annonces collectées restent en local ; seuls les résultats agrégés sont publiés.
+
+**Déjà fait en v2 (avril 2026)** : 2 420 annonces du 16e arrondissement collectées avec Playwright, 579 enrichies par l'IA, puis croisées avec les ventes DVF dans PostgreSQL. **Le module est prêt à être relancé** : une commande collecte les annonces du jour et produit le croisement (`python pipeline.py --annonces-collecte --annonces-analyse`). Relancé régulièrement, il affine les estimations avec les prix du moment, que DVF ne montre pas encore.
+
+### 7. Restitution : l'application web
 
 **Objectif :** qu'un non-spécialiste puisse s'en servir.
 
@@ -158,7 +174,7 @@ On tape une adresse, une surface, un nombre de pièces et un prix demandé. L'ap
 | `matplotlib` | `plt.subplots`, `savefig` | graphiques de ce README, générés par le pipeline |
 | API Géoplateforme (IGN) | `requests.get()` | transformer une adresse en coordonnées GPS |
 
-### 7. Qualité
+### 8. Qualité
 
 - **Tests automatiques** (`pytest`, dossier [`tests/`](tests/)) : les règles de nettoyage (une vente de deux appartements est bien exclue…) et les seuils du verdict.
 - **Configuration séparée du code** (`config.py`) : zone, années, seuils.
@@ -222,7 +238,7 @@ Je ne prétends pas avoir écrit chaque ligne à la main. En revanche, je sais e
 ## Limites et prochaines étapes
 
 - **Intégrer l'enrichissement IA au modèle** pour les annonces : étage, état et DPE sont les critères qui manquent le plus.
-- **Délai de DVF** : les ventes sont publiées avec quelques mois de retard, donc la tendance « 12 derniers mois » a un temps de retard.
+- **Délai de DVF** : environ 9 mois de retard sur les ventes réelles. C'est la raison du croisement avec les annonces en ligne, à relancer régulièrement.
 - **Autres villes** : le pipeline est prêt (`config.py`), à valider hors Paris, maisons incluses.
 - **Annonces** : module d'usage personnel, dans le respect des conditions d'utilisation des sites. Les annonces collectées ne sont pas publiées dans ce dépôt.
 
@@ -244,7 +260,7 @@ pytest                         # lance les tests
 pip install -r requirements-annonces.txt && playwright install chromium
 export ANTHROPIC_API_KEY=...   # pour l'enrichissement IA
 python pipeline.py --annonces-collecte --annonces-enrichissement
-python pipeline.py --annonces-analyse data/annonces/mon_fichier.csv
+python pipeline.py --annonces-analyse    # verdicts + croisement avec les ventes DVF
 ```
 
 ## Structure
