@@ -44,6 +44,16 @@ def lire_json(chemin):
         return json.load(f)
 
 
+@st.cache_data(ttl=86_400, show_spinner=False)
+def geocoder_cache(adresse):
+    return geocoder(adresse)
+
+
+# Exemple affiché à l'ouverture : le visiteur voit tout de suite un résultat
+EXEMPLE = dict(adresse="12 rue de Passy, Paris", surface=65, pieces=3, prix=890_000,
+               secteur="Paris 16e")
+
+
 def euros(x):
     return f"{x:,.0f} €".replace(",", " ")
 
@@ -85,86 +95,104 @@ onglet_annonce, onglet_marche = onglets[0], onglets[1]
 onglet_annonces_moment = onglets[2] if avec_annonces else None
 onglet_methode = onglets[-1]
 
+
+def afficher_resultat(adresse, surface, pieces, prix_demande, dependance, secteur_manuel):
+    """Estimation, verdict et ventes comparables pour le bien saisi."""
+    exemple = (adresse == EXEMPLE["adresse"] and surface == EXEMPLE["surface"]
+               and pieces == EXEMPLE["pieces"] and prix_demande == EXEMPLE["prix"])
+    position = geocoder_cache(adresse) if adresse.strip() else None
+    if position is None and exemple and secteur_manuel == "Déduire de l'adresse":
+        secteur_manuel = EXEMPLE["secteur"]
+    if position and position["code_commune"] not in set(centres["code_commune"]):
+        st.error(f"« {position['label']} » est hors de la zone couverte ({config.NOM_ZONE}).")
+        return
+    if position is None:
+        if secteur_manuel == "Déduire de l'adresse":
+            st.warning("Adresse introuvable : choisissez le secteur dans la liste.")
+            return
+        ligne = centres[centres["secteur"] == secteur_manuel].iloc[0]
+        position = {"latitude": ligne["latitude"], "longitude": ligne["longitude"],
+                    "code_commune": ligne["code_commune"], "label": secteur_manuel}
+        st.info(f"Estimation au niveau du secteur ({secteur_manuel}), moins précise "
+                "qu'avec une adresse.")
+
+    bien = pd.DataFrame([{**position, "surface": surface, "nb_pieces": pieces,
+                          "nb_dependances": int(dependance)}])
+    est = modele.estimer(paquet, bien).iloc[0]
+
+    if exemple:
+        st.caption("Exemple : un 3 pièces de 65 m² rue de Passy (16e), proposé à 890 000 €.")
+    st.caption(f"📍 {position['label']}")
+    if prix_demande > 0:
+        v = verdict(prix_demande, est["prix_estime"], est["fourchette_basse"],
+                    est["fourchette_haute"])
+        message = (f"**{v['verdict']}** : le prix demandé est **{v['ecart_pct']:+.0f} %** "
+                   f"par rapport à l'estimation.")
+        if v["verdict"] == SUREVALUE:
+            st.error(message, icon="🔺")
+        elif v["verdict"] == AU_DESSUS:
+            st.warning(message, icon="↗️")
+        elif v["verdict"] in (SOUS_EVALUE, EN_DESSOUS):
+            st.success(message, icon="↘️")
+        else:
+            st.info(message, icon="✅")
+
+    m1, m2 = st.columns(2)
+    m1.metric("Prix estimé", euros_arrondis(est["prix_estime"]),
+              help="Prix de vente probable, pas prix d'annonce.")
+    m2.metric("Prix au m²", euros(round(est["prix_estime"] / surface, -1)))
+    st.markdown(f"**Fourchette de marché** : {euros_arrondis(est['fourchette_basse'])} à "
+                f"{euros_arrondis(est['fourchette_haute'])}  \n"
+                f"<small>8 ventes comparables sur 10 se situent dans cet intervalle. "
+                f"Un prix d'annonce inclut souvent une marge de négociation (≈ 5 %).</small>",
+                unsafe_allow_html=True)
+
+    comp = sql("ventes_comparables", lat=position["latitude"], lon=position["longitude"],
+               surface=float(surface))
+    st.subheader("Ventes réelles les plus proches")
+    st.caption("Même taille (± 25 %), vendues dans les 24 derniers mois. Source : DVF.")
+    carte = pd.concat([
+        comp[["latitude", "longitude"]].assign(couleur=BLEU, taille=12),
+        pd.DataFrame([{"latitude": position["latitude"], "longitude": position["longitude"],
+                       "couleur": ROUGE, "taille": 20}]),
+    ])
+    st.map(carte, latitude="latitude", longitude="longitude", color="couleur",
+           size="taille", zoom=15, height=280)
+    st.caption("🔴 le bien analysé · 🔵 les ventes comparables")
+    tableau = comp.drop(columns=["latitude", "longitude"]).assign(
+        date=comp["date"].dt.strftime("%m/%Y"),
+        prix=comp["prix"].map(euros),
+        prix_m2=comp["prix_m2"].map(euros),
+        distance_m=comp["distance_m"].astype(int).astype(str) + " m",
+    ).rename(columns={"date": "Date", "adresse": "Adresse", "secteur": "Secteur",
+                      "surface": "m²", "nb_pieces": "Pièces", "prix": "Prix",
+                      "prix_m2": "Prix / m²", "distance_m": "Distance"})
+    st.dataframe(tableau, hide_index=True, width="stretch")
+
+
 # ── 1. Vérifier une annonce ──────────────────────────────────
 with onglet_annonce:
+    st.info("**Mode d'emploi :** un exemple est déjà rempli et analysé ci-dessous. "
+            "Remplacez l'adresse, la surface ou le prix par ceux d'une annonce parisienne, "
+            "puis cliquez sur **Analyser**.", icon="👉")
     with st.form("bien"):
-        adresse = st.text_input("Adresse du bien", placeholder="ex. 12 rue de Passy, Paris")
+        adresse = st.text_input("Adresse du bien", value=EXEMPLE["adresse"])
         c1, c2 = st.columns(2)
-        surface = c1.number_input("Surface (m²)", min_value=9, max_value=400, value=50)
-        pieces = c2.number_input("Nombre de pièces", min_value=1, max_value=10, value=2)
+        surface = c1.number_input("Surface (m²)", min_value=9, max_value=400,
+                                  value=EXEMPLE["surface"])
+        pieces = c2.number_input("Nombre de pièces", min_value=1, max_value=10,
+                                 value=EXEMPLE["pieces"])
         c3, c4 = st.columns(2)
-        prix_demande = c3.number_input("Prix demandé (€), facultatif", min_value=0, value=0,
-                                       step=10_000)
+        prix_demande = c3.number_input("Prix demandé (€), facultatif", min_value=0,
+                                       value=EXEMPLE["prix"], step=10_000)
         dependance = c4.checkbox("Cave ou parking inclus")
         secteur_manuel = st.selectbox("Secteur (si l'adresse n'est pas trouvée)",
                                       ["Déduire de l'adresse"] + secteurs)
-        lancer = st.form_submit_button("Analyser", type="primary", width="stretch")
+        st.form_submit_button("Analyser", type="primary", width="stretch")
 
-    if lancer:
-        position = geocoder(adresse) if adresse.strip() else None
-        if position and position["code_commune"] not in set(centres["code_commune"]):
-            st.error(f"« {position['label']} » est hors de la zone couverte ({config.NOM_ZONE}).")
-            st.stop()
-        if position is None:
-            if secteur_manuel == "Déduire de l'adresse":
-                st.warning("Adresse introuvable : choisissez le secteur dans la liste.")
-                st.stop()
-            ligne = centres[centres["secteur"] == secteur_manuel].iloc[0]
-            position = {"latitude": ligne["latitude"], "longitude": ligne["longitude"],
-                        "code_commune": ligne["code_commune"], "label": secteur_manuel}
-            st.info(f"Estimation au niveau du secteur ({secteur_manuel}), moins précise "
-                    "qu'avec une adresse.")
-
-        bien = pd.DataFrame([{**position, "surface": surface, "nb_pieces": pieces,
-                              "nb_dependances": int(dependance)}])
-        est = modele.estimer(paquet, bien).iloc[0]
-
-        st.caption(f"📍 {position['label']}")
-        if prix_demande > 0:
-            v = verdict(prix_demande, est["prix_estime"], est["fourchette_basse"],
-                        est["fourchette_haute"])
-            message = (f"**{v['verdict']}** : le prix demandé est **{v['ecart_pct']:+.0f} %** "
-                       f"par rapport à l'estimation.")
-            if v["verdict"] == SUREVALUE:
-                st.error(message, icon="🔺")
-            elif v["verdict"] == AU_DESSUS:
-                st.warning(message, icon="↗️")
-            elif v["verdict"] in (SOUS_EVALUE, EN_DESSOUS):
-                st.success(message, icon="↘️")
-            else:
-                st.info(message, icon="✅")
-
-        m1, m2 = st.columns(2)
-        m1.metric("Prix estimé", euros_arrondis(est["prix_estime"]),
-                  help="Prix de vente probable, pas prix d'annonce.")
-        m2.metric("Prix au m²", euros(round(est["prix_estime"] / surface, -1)))
-        st.markdown(f"**Fourchette de marché** : {euros_arrondis(est['fourchette_basse'])} à "
-                    f"{euros_arrondis(est['fourchette_haute'])}  \n"
-                    f"<small>8 ventes comparables sur 10 se situent dans cet intervalle. "
-                    f"Un prix d'annonce inclut souvent une marge de négociation (≈ 5 %).</small>",
-                    unsafe_allow_html=True)
-
-        comp = sql("ventes_comparables", lat=position["latitude"], lon=position["longitude"],
-                   surface=float(surface))
-        st.subheader("Ventes réelles les plus proches")
-        st.caption("Même taille (± 25 %), vendues dans les 24 derniers mois. Source : DVF.")
-        carte = pd.concat([
-            comp[["latitude", "longitude"]].assign(couleur=BLEU, taille=12),
-            pd.DataFrame([{"latitude": position["latitude"], "longitude": position["longitude"],
-                           "couleur": ROUGE, "taille": 20}]),
-        ])
-        st.map(carte, latitude="latitude", longitude="longitude", color="couleur",
-               size="taille", zoom=15, height=280)
-        st.caption("🔴 le bien analysé · 🔵 les ventes comparables")
-        tableau = comp.drop(columns=["latitude", "longitude"]).assign(
-            date=comp["date"].dt.strftime("%m/%Y"),
-            prix=comp["prix"].map(euros),
-            prix_m2=comp["prix_m2"].map(euros),
-            distance_m=comp["distance_m"].astype(int).astype(str) + " m",
-        ).rename(columns={"date": "Date", "adresse": "Adresse", "secteur": "Secteur",
-                          "surface": "m²", "nb_pieces": "Pièces", "prix": "Prix",
-                          "prix_m2": "Prix / m²", "distance_m": "Distance"})
-        st.dataframe(tableau, hide_index=True, width="stretch")
+    # Toujours un résultat affiché : l'exemple à l'ouverture, puis les valeurs saisies
+    # (dans un formulaire, les valeurs ne changent qu'au clic sur « Analyser »).
+    afficher_resultat(adresse, surface, pieces, prix_demande, dependance, secteur_manuel)
 
 # ── 2. Le marché ─────────────────────────────────────────────
 with onglet_marche:
