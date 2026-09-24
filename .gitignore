@@ -1,8 +1,10 @@
-output/
-*.xlsx
-*.csv
-__pycache__/
-*.pyc
+# Données brutes (téléchargées par le pipeline) et annonces (usage personnel)
+data/brut/
+data/annonces/
+# Environnement
 .env
 venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 .DS_Store

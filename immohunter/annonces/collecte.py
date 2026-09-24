@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Immo-Hunter — Scrape SeLoger, exporte CSV + Excel."""
+"""Module optionnel : collecte d'annonces en ligne -> data/annonces/annonces_<ville>.csv."""
 import csv
 import os
 import sys
 
 import config
-from scraper.seloger import scrape
-from scraper.geo import filter_by_city, city_to_slug
+from immohunter.annonces.scraper.seloger import scrape
+from immohunter.annonces.scraper.geo import filter_by_city, city_to_slug
 
 
 def dedup(results):
@@ -108,8 +108,8 @@ def main():
     print("""
   {} — {} annonces exportees
   Avec description : {}
-  Excel : output/annonces_{}.xlsx
-  CSV   : output/annonces_{}.csv
+  Excel : data/annonces/annonces_{}.xlsx
+  CSV   : data/annonces/annonces_{}.csv
 """.format(city, len(unique), with_desc, slug, slug))
 
 

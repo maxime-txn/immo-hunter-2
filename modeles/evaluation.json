@@ -1,0 +1,52 @@
+{
+  "periode_apprentissage": [
+    "2021-01-04",
+    "2025-06-30"
+  ],
+  "periode_test": [
+    "2025-07-01",
+    "2025-12-31"
+  ],
+  "nb_ventes_apprentissage": 128321,
+  "nb_ventes_test": 14523,
+  "comparaison": {
+    "Méthode simple (médiane du secteur × surface)": {
+      "erreur_mediane_pct": 14.2,
+      "part_a_moins_de_10pct": 37.6,
+      "erreur_moyenne_eur": 116692,
+      "r2": 0.778
+    },
+    "Régression linéaire": {
+      "erreur_mediane_pct": 14.1,
+      "part_a_moins_de_10pct": 36.3,
+      "erreur_moyenne_eur": 116940,
+      "r2": 0.779
+    },
+    "Forêt aléatoire (Random Forest)": {
+      "erreur_mediane_pct": 12.4,
+      "part_a_moins_de_10pct": 41.8,
+      "erreur_moyenne_eur": 101442,
+      "r2": 0.851
+    },
+    "Gradient boosting (retenu)": {
+      "erreur_mediane_pct": 12.2,
+      "part_a_moins_de_10pct": 42.4,
+      "erreur_moyenne_eur": 101185,
+      "r2": 0.846
+    }
+  },
+  "reference_mediane_secteur": {
+    "erreur_mediane_pct": 14.2,
+    "part_a_moins_de_10pct": 37.6,
+    "erreur_moyenne_eur": 116692,
+    "r2": 0.778
+  },
+  "modele": {
+    "erreur_mediane_pct": 12.2,
+    "part_a_moins_de_10pct": 42.4,
+    "erreur_moyenne_eur": 101185,
+    "r2": 0.846
+  },
+  "fourchette_couverture_pct": 77.3,
+  "fourchette_cible_pct": 80
+}

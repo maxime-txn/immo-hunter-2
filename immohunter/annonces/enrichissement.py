@@ -209,10 +209,10 @@ def main():
         sys.exit(1)
 
     # Trouver le CSV le plus récent (exclure enrichi et prediction)
-    csvs = glob.glob("output/annonces_*.csv")
+    csvs = glob.glob("data/annonces/annonces_*.csv")
     csvs = [c for c in csvs if "_enrichi" not in c and "_prediction" not in c]
     if not csvs:
-        print("Erreur: aucun CSV dans output/")
+        print("Erreur: aucun CSV dans data/annonces/")
         sys.exit(1)
 
     csv_path = max(csvs, key=os.path.getmtime)

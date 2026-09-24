@@ -3,7 +3,7 @@ import re
 import time
 import random
 from playwright.sync_api import sync_playwright
-from scraper.parser import parse_price, parse_surface, parse_rooms, parse_bedrooms, parse_location, parse_type
+from immohunter.annonces.scraper.parser import parse_price, parse_surface, parse_rooms, parse_bedrooms, parse_location, parse_type
 import config
 
 
@@ -174,7 +174,7 @@ def scrape():
     #    Comme ca si Ctrl+C pendant les descriptions, les donnees sont preservees
     import csv as _csv
     import os as _os
-    from scraper.geo import city_to_slug
+    from immohunter.annonces.scraper.geo import city_to_slug
     slug = city_to_slug(city)
     csv_path = "{}/annonces_{}.csv".format(config.OUTPUT_DIR, slug)
     _os.makedirs(config.OUTPUT_DIR, exist_ok=True)

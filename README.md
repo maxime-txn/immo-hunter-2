@@ -1,231 +1,276 @@
-# 🏠 Immo-Hunter — Analyse du marché immobilier Paris 16e
+# 🏠 Immo-Hunter
 
-> **2 420 annonces scrapées** + **38 523 transactions DVF** · Analyse SQL + Dashboard Power BI · Surévaluation moyenne : **+5.4%** · Modèle ML (**R² = 0.92**, MAE -27%)
+**Outil d'analyse et de prédiction des prix immobiliers : ventes notariales réelles, annonces en ligne et IA.**
 
----
+[**▶ Essayer l'application**](https://immo-hunter.streamlit.app) · [Le pipeline](#le-pipeline-de-bout-en-bout) · [Résultats](#résultats) · [Ce que j'ai corrigé en v3](#v2--v3--ce-que-jai-corrigé-et-pourquoi) · [Mon usage de l'IA](#comment-jai-utilisé-lia)
 
-## 💡 Innovation du projet
+Pour n'importe quel appartement à Paris, l'outil répond à trois questions :
 
-Utilisation d'un LLM (Claude, Anthropic) pour transformer des descriptions immobilières non structurées en données exploitables — **50 features extraites automatiquement** (étage, DPE, exposition, état général, quartier, points forts/faibles…) à partir de texte libre.
+1. **Cette annonce est-elle au juste prix ?** Sous-évaluée, au prix du marché ou surévaluée, avec l'écart en %.
+2. **Le marché de ce secteur monte-t-il ou baisse-t-il ?**
+3. **Combien vaut ce bien ?** Une estimation, une fourchette et les ventes réelles comparables.
 
----
+| **142 844** ventes notariales analysées | **12,2 %** d'erreur médiane | **77,3 %** des prix réels dans la fourchette annoncée | **7** tests automatiques |
+|:---:|:---:|:---:|:---:|
+| Paris, 2021–2025 | contre 14,2 % pour la méthode simple | objectif : 80 % | pytest |
 
-## Pourquoi ce projet ?
-
-Je suis étudiant en M1 Data Science & BI à EDC Paris et je cherche une alternance en Data Analyst / BI Analyst pour mon M2 (septembre 2026). J'ai voulu construire un projet de bout en bout, de la collecte de données jusqu'à la visualisation, sur un sujet concret : **le marché immobilier dans le 16e arrondissement de Paris**.
-
-L'objectif était simple : récupérer des données réelles, les analyser, et répondre à une question : **est-ce que les vendeurs surévaluent leurs biens par rapport aux prix réels du marché ?**
-
-> **Note** : J'ai fait l'analyse sur le 16e arrondissement, mais le scraper et le pipeline sont configurables pour n'importe quelle ville ou région en France. Il suffit de changer la ville et le code postal dans `config.py` pour relancer l'analyse ailleurs.
+![Aperçu de l'application](rapports/apercu_app.png)
 
 ---
 
-## Ce que j'ai fait
+## Pourquoi ce projet
+
+En agence immobilière, j'ai fait des estimations de prix « à la main » : on cherche des ventes comparables dans le quartier, on ajuste selon la surface, puis on compare au prix affiché. J'ai voulu savoir si je pouvais **automatiser cette démarche avec de vraies données**, et construire un outil que n'importe qui peut réutiliser.
+
+Le projet a commencé sur le 16e arrondissement (v1, v2). La v3 couvre tout Paris, et le pipeline fonctionne pour n'importe quelle ville de France en changeant `config.py`.
+
+---
+
+## Le pipeline de bout en bout
+
+```mermaid
+flowchart LR
+    A["Ventes notariales DVF<br/>(data.gouv.fr)"] --> B["Nettoyage<br/>pandas"]
+    B --> C[("Base analytique<br/>DuckDB + SQL")]
+    C --> D["Modèle de prix<br/>scikit-learn"]
+    E["Annonces en ligne<br/>Playwright"] --> F["Enrichissement IA<br/>API Claude"]
+    F --> G["Verdict par annonce"]
+    D --> G
+    C --> H["Tendances de marché"]
+    D --> I["Application web<br/>Streamlit"]
+    H --> I
+```
+
+Une seule commande relance tout : `python pipeline.py --tout`
+
+---
+
+## Étape par étape : ce que j'ai fait et avec quels outils
 
 ### 1. Collecte des données
 
-J'ai récupéré deux sources de données :
+**Objectif :** partir de prix de vente **réels**, pas de prix d'annonce.
 
-- **2 420 annonces** scrappées depuis un leader de l'immobilier en ligne avec **Playwright** (navigateur headless). Le site utilise des protections anti-bot (CAPTCHA, détection de webdriver, bannières de cookies). J'ai dû configurer un user-agent réaliste, désactiver les marqueurs d'automatisation, et gérer les pauses aléatoires entre les requêtes pour simuler un comportement humain. Le scraper récupère les fiches résumées puis visite chaque annonce individuellement pour extraire la description complète — **1 538 descriptions récupérées (64%)**. Le dataset final contient principalement des appartements (2 237), mais aussi des duplex, maisons, studios, lofts et villas.
-- **38 523 transactions réelles** (DVF — Données de Valeurs Foncières) téléchargées automatiquement depuis data.gouv.fr via un script Python (`requests`), couvrant la période 2020-2025.
+- **Ventes notariales DVF** (Demandes de Valeurs Foncières) : toutes les ventes immobilières enregistrées chez les notaires, en open data, déjà géolocalisées. 420 058 lignes brutes pour Paris sur 2021–2025.
+- **Annonces en ligne** (module optionnel) : en v2, j'ai collecté 2 420 annonces du 16e pour les comparer aux ventes réelles.
 
-### 2. Enrichissement IA
-
-J'ai utilisé l'**API Claude** (Anthropic, via la bibliothèque `anthropic`) pour analyser les descriptions en texte libre des annonces et en extraire des données structurées en JSON — **50+ features** par annonce : étage, nombre d'étages de l'immeuble, hauteur sous plafond, DPE/GES, exposition, état général, type de chauffage, vue, ascenseur, cave, balcon, terrasse, loggia, piscine, proximité transports, points forts/faibles, quartier, etc.
-
-Le prompt a été optimisé pour renvoyer un JSON strictement normalisé (valeurs d'énumération fixées : `etat_general` ∈ {neuf, rénové, bon, à rafraîchir...}, `exposition` ∈ {nord, sud, est, ouest, traversant...}, DPE en lettre A-G), ce qui permet de requêter les données directement en SQL sans nettoyage supplémentaire.
-
-J'ai enrichi **579 annonces sur les 2 420** — enrichir l'intégralité de la base aurait représenté un coût API trop élevé. J'ai donc travaillé sur un échantillon, ce qui m'a quand même permis d'extraire 350 étages, 279 états généraux, 115 DPE et d'identifier 290 quartiers différents (Passy, Auteuil, Trocadéro, Victor Hugo, La Muette...). Le reste de l'enrichissement (mots-clés, regex) a été fait en SQL.
-
-### 3. Base de données et nettoyage
-
-J'ai importé les deux datasets dans **PostgreSQL** via `import_db.py` (~630 lignes) qui crée automatiquement :
-
-- La table `annonces` avec **toutes les features IA** (50+ colonnes typées : INTEGER, BOOLEAN, VARCHAR avec contraintes)
-- La table `dvf` avec les transactions réelles 2020-2025
-- Les **vues SQL prêtes pour pgAdmin** : évolution prix/m², surévaluation par typologie, impact DPE, marge de négociation…
-- Contrainte `UNIQUE` sur l'URL des annonces pour éviter les doublons entre imports
-
-Le nettoyage complémentaire est fait directement en SQL :
-
-- Extraction du DPE, de l'étage et de l'exposition par regex
-- Détection de mots-clés dans les descriptions (ascenseur, balcon, terrasse, lumineux, calme, rénové…)
-- Calcul du prix/m² sur les deux tables
-- Création de vues pour chaque axe d'analyse
-
-### 4. Analyse SQL
-
-J'ai construit plusieurs analyses à partir des vues SQL :
-
-- Évolution des prix/m² de 2020 à 2025
-- Comparaison prix annonces vs prix de vente réels
-- Impact du DPE sur le prix
-- Marge de négociation par type de bien
-
-![pgAdmin](screenshots/pgadmin.png)
-
-### 5. Visualisation Power BI
-
-J'ai exporté les résultats en CSV et construit un **dashboard Power BI** avec 4 graphiques :
-
-- **Surévaluation : prix demandé vs prix réel (€/m²)** — courbe DVF + frais (2020-2025) comparée au prix moyen des annonces. On voit le marché passer au-dessus puis en dessous du prix demandé à partir de 2023.
-- **Marge de négociation par typologie (nb pièces)** — barres groupées montrant l'écart entre prix demandé et prix réel de vente, de 1 à 7 pièces.
-- **Prix demandé vs prix estimé (ML) par typologie** — les prédictions du modèle confrontées aux prix affichés, par nombre de pièces.
-- **Impact du DPE sur le prix au m²** — évolution du prix selon la lettre DPE (A → G), montrant l'écart de valorisation entre biens performants et passoires énergétiques.
-
-![Dashboard Power BI](screenshots/dashboard_powerbi.png)
-
-### 6. Prédiction de prix (Machine Learning)
-
-J'ai construit un modèle en Python avec scikit-learn qui apprend sur les transactions DVF réelles et prédit le prix des annonces en ligne. Le modèle entraîne simultanément sur **maisons et appartements** (un flag `est_maison` permet au modèle de différencier les deux) — ce qui le rend utilisable au-delà du 16e parisien.
-
-**10 features** au lieu des 3 d'origine, en incluant du feature engineering géographique :
-
-| Feature | Description |
-|---|---|
-| `surface_best` | Surface Carrez quand dispo, sinon surface réelle bâtie |
-| `nombre_pieces_principales` | Nombre de pièces |
-| `surface_terrain` | Terrain (0 pour appartements) |
-| `est_maison` | Flag maison vs appartement |
-| `annee`, `mois` | Temporalité de la transaction |
-| `longitude`, `latitude` | Coordonnées géographiques |
-| `nombre_lots` | Nombre de lots de la mutation |
-| `prix_m2_zone` | **Médiane du prix/m² par micro-quartier** (cellule de ~100m) — capte l'effet localisation |
-
-J'ai comparé **3 modèles** avec une **cross-validation 5-fold** (au lieu d'un simple train/test split), puis validation hold-out sur 20% :
-
-| Modèle | R² (5-fold CV) | MAE |
+| Outil | Ce que j'utilise | À quoi ça sert |
 |---|---|---|
-| Régression Linéaire | 0.881 | 174 047 € |
-| Random Forest | 0.905 | ~135 000 € |
-| **Gradient Boosting** | **0.917** | **~127 000 €** |
+| `requests` | `requests.get(url)` | télécharger les fichiers DVF année par année |
+| `playwright` | `sync_playwright()`, `page.goto()` | piloter un navigateur pour lire les pages d'annonces |
+| `re` (regex) | `re.search()` | extraire prix, surface et pièces du texte des annonces |
 
-**Résultat** : R² passe de 0.88 → 0.917 et MAE diminue de ~27% grâce au feature engineering géographique et au Gradient Boosting. Le modèle est ensuite appliqué sur les annonces en ligne pour estimer si le prix demandé est cohérent avec le marché, et un CSV `annonces_*_prediction.csv` est exporté pour Power BI.
+### 2. Enrichissement IA des annonces
 
-![Output ML](screenshots/terminal_ml.png)
+**Objectif :** une annonce, c'est surtout du texte libre (« lumineux, 4e étage avec ascenseur, DPE C, à rafraîchir… »). Ces infos ne sont pas exploitables telles quelles.
 
-### Limites du modèle
+J'envoie chaque description à l'**API Claude** avec une consigne stricte : répondre en JSON, avec des valeurs imposées (`etat_general` parmi *neuf / rénové / bon / à rafraîchir…*, DPE en lettre A à G…). On obtient **plus de 50 informations structurées par annonce** (étage, ascenseur, DPE, exposition, état, cave, balcon…), directement exploitables en SQL. En v2, j'ai enrichi 579 annonces : enrichir les 2 420 aurait coûté trop cher en appels API.
 
-Malgré l'amélioration, le modèle ne capte pas encore tous les critères qualitatifs : DPE, état général, étage, vue, exposition. Ces features sont disponibles via l'enrichissement IA mais sur un sous-échantillon seulement (579/2420 annonces enrichies) — les intégrer au modèle nécessiterait d'enrichir la totalité du dataset (coût API) ou d'utiliser un modèle hybride (features IA quand disponibles, imputation sinon). C'est une piste pour une prochaine itération.
+Avant l'enrichissement, les **doublons** sont supprimés (même URL, ou même prix + surface + nombre de pièces). Le script **reprend là où il s'était arrêté** : une annonce déjà enrichie n'est jamais renvoyée à l'API, donc jamais payée deux fois. La **clé API** n'est jamais écrite dans le code : elle est lue dans une variable d'environnement (`ANTHROPIC_API_KEY`, voir `.env.example`).
 
-### Pipeline unifié
+Aujourd'hui, ces informations servent au verdict sur les annonces (cave, parking). Les ajouter au modèle de prix (étage, état, DPE) est la [prochaine étape](#limites-et-prochaines-étapes).
 
-Tout le workflow peut être exécuté en une seule commande via `pipeline.py` :
+| Outil | Ce que j'utilise | À quoi ça sert |
+|---|---|---|
+| `anthropic` | `client.messages.create()` | appeler le modèle Claude avec la description et la consigne |
+| `json` | `json.loads()` | transformer la réponse en données |
+| `os` | `os.environ.get("ANTHROPIC_API_KEY")` | lire la clé API sans l'écrire dans le code |
+| `csv` | `csv.DictReader`, `csv.DictWriter` | lire les annonces, écrire le fichier enrichi au fur et à mesure |
 
-```bash
-python pipeline.py              # Scrape + DVF
-python pipeline.py --enrich     # + Enrichissement IA
-python pipeline.py --predict    # + Prédiction ML
-python pipeline.py --all        # Tout : scrape + DVF + enrichissement + ML + import DB
-python pipeline.py --dvf-only   # DVF seulement
-```
+### 3. Nettoyage : le vrai travail
 
-Le téléchargement DVF est **dynamique** : le script interroge l'API geo.api.gouv.fr pour récupérer le code commune à partir du code postal dans `config.py`, puis filtre les fichiers DVF annuels en streaming (pas besoin de tout télécharger).
+**Objectif :** une ligne = une vente d'un logement, avec un prix au m² juste.
+
+Le piège de DVF : une vente peut contenir plusieurs lots (deux appartements, un local commercial, une cave…) et **le prix affiché sur chaque ligne est le prix total**. Diviser ce prix total par la surface d'un seul appartement donne des prix au m² faux. J'ai donc gardé uniquement les ventes d'**un seul logement**, avec éventuellement une cave ou un parking.
+
+| Étape | Lignes / ventes restantes |
+|---|---:|
+| Lignes brutes DVF | 420 058 |
+| Mutations distinctes (ventes, échanges, adjudications…) | 207 365 |
+| … de type « Vente » | 204 462 |
+| … d'un seul logement | 149 719 |
+| … avec surface et position valides | 148 283 |
+| … avec un prix au m² plausible (**table finale**) | 142 844 |
+
+| Outil | Ce que j'utilise | À quoi ça sert |
+|---|---|---|
+| `pandas` | `read_csv()`, `concat()` | charger et empiler les fichiers annuels |
+| `pandas` | `drop_duplicates()` | supprimer les lignes répétées (une vente sur plusieurs parcelles) |
+| `pandas` | `crosstab()` | compter, pour chaque vente, les logements, caves et locaux |
+| `pandas` | `to_numeric()`, `to_datetime()`, `between()` | typer les colonnes, filtrer les valeurs aberrantes |
+| `pandas` | `to_parquet()` | sauvegarder la table propre (format compact, rapide à lire) |
+
+### 4. Base de données et analyses SQL
+
+**Objectif :** répondre aux questions de marché en SQL, comme on le ferait en entreprise.
+
+J'utilise **DuckDB**, une base analytique qui lit directement le fichier de ventes, sans serveur à installer. C'est ce qui permet à l'application en ligne de fonctionner. Les requêtes sont en **SQL standard** (compatible PostgreSQL) et rangées dans [`sql/`](sql/) :
+
+| Requête | Question | Notions SQL |
+|---|---|---|
+| [`evolution_prix.sql`](sql/evolution_prix.sql) | Comment évolue le prix au m² par secteur, année après année ? | `WITH` (CTE), `PERCENTILE_CONT`, fonction de fenêtre `LAG()` |
+| [`tendance_12_mois.sql`](sql/tendance_12_mois.sql) | Le marché monte-t-il ou baisse-t-il sur 12 mois ? | `CASE WHEN`, `INTERVAL`, agrégats `FILTER`, `RANK()` |
+| [`ventes_comparables.sql`](sql/ventes_comparables.sql) | Quelles ventes réelles ressemblent à ce bien ? | calcul de distance GPS (haversine), paramètres |
+| [`centres_codes_postaux.sql`](sql/centres_codes_postaux.sql) | Où placer une annonce dont on ne connaît que le code postal ? | `ROW_NUMBER() OVER (PARTITION BY …)` |
+
+### 5. Le modèle de prix
+
+**Objectif :** estimer le prix de vente d'un logement à partir de ce qu'on connaît pour n'importe quelle annonce : position, surface, nombre de pièces, cave ou parking, date.
+
+Mes choix, et pourquoi :
+
+- **Prédire le prix au m², puis multiplier par la surface.** C'est plus stable que le prix total.
+- **Travailler sur le logarithme du prix au m².** Une erreur de 10 % pèse pareil sur un studio que sur un 5 pièces.
+- **Comparer plusieurs algorithmes à une méthode simple.** Un modèle n'a d'intérêt que s'il fait mieux que « prix médian du secteur × surface ».
+- **Validation temporelle.** J'entraîne sur le passé et je teste sur les 14 523 ventes les plus récentes (07/2025 → 12/2025), que le modèle n'a jamais vues. C'est la situation réelle : estimer un bien aujourd'hui avec l'historique.
+
+**Résultats sur la période de test :**
+
+| Méthode | Erreur médiane | Ventes estimées à ± 10 % | R² |
+|---|---:|---:|---:|
+| Méthode simple (médiane du secteur × surface) | 14,2 % | 37,6 % | 0,78 |
+| Régression linéaire | 14,1 % | 36,3 % | 0,78 |
+| Forêt aléatoire (Random Forest) | 12,4 % | 41,8 % | 0,85 |
+| **Gradient boosting (retenu)** | **12,2 %** | 42,4 % | 0,85 |
+
+J'ai retenu le **gradient boosting** : c'est le plus précis, et il sait aussi calculer une **fourchette** (régression quantile). Sur la période de test, la fourchette annoncée contient le vrai prix dans **77,3 %** des cas, pour un objectif de 80 %.
+
+| Outil | Ce que j'utilise | À quoi ça sert |
+|---|---|---|
+| `scikit-learn` | `LinearRegression` + `OneHotEncoder`, `StandardScaler`, `ColumnTransformer`, `make_pipeline` | modèle linéaire de comparaison, avec préparation des variables |
+| `scikit-learn` | `RandomForestRegressor` | forêt aléatoire : une moyenne de nombreux arbres de décision |
+| `scikit-learn` | `HistGradientBoostingRegressor` (et `loss="quantile"`) | modèle retenu, et bornes basse / haute de la fourchette |
+| `numpy` | `np.log()`, `np.exp()`, `np.median()` | passage au log, calcul des erreurs |
+| `joblib` | `joblib.dump()` | sauvegarder le modèle entraîné pour l'application |
+
+![Précision du modèle](rapports/precision_modele.png)
+
+### 6. Restitution : l'application web
+
+**Objectif :** qu'un non-spécialiste puisse s'en servir.
+
+On tape une adresse, une surface, un nombre de pièces et un prix demandé. L'application donne le verdict, l'estimation, la fourchette, le prix au m² et les 10 ventes réelles les plus proches, avec leur carte. Un deuxième onglet montre la tendance du marché par secteur.
+
+| Outil | Ce que j'utilise | À quoi ça sert |
+|---|---|---|
+| `streamlit` | `st.form`, `st.metric`, `st.map`, `st.dataframe`, `st.cache_data` | interface web en Python |
+| `plotly` | `go.Figure`, `add_scatter`, `go.Bar` | graphiques interactifs de l'application |
+| `matplotlib` | `plt.subplots`, `savefig` | graphiques de ce README, générés par le pipeline |
+| API Géoplateforme (IGN) | `requests.get()` | transformer une adresse en coordonnées GPS |
+
+### 7. Qualité
+
+- **Tests automatiques** (`pytest`, dossier [`tests/`](tests/)) : les règles de nettoyage (une vente de deux appartements est bien exclue…) et les seuils du verdict.
+- **Configuration séparée du code** (`config.py`) : zone, années, seuils.
+- **Git** : suivi des versions du projet (v1 dans le dépôt `immo-hunter`, puis v2 et v3 ici).
 
 ---
 
-## Ce qu'on retient
+## Résultats
 
-### Le marché du 16e : montée, chute, et début de reprise
+### Le marché parisien
 
-Les prix/m² ont progressé entre 2020 et 2022, atteignant un pic à 12 619 €/m² net vendeur. À partir de 2023, le marché s'est retourné : baisse des prix (-7% entre 2022 et 2024, tombant à 11 712 €/m²) accompagnée d'une baisse du volume de ventes (de 2 921 transactions en 2022 à 2 043 en 2024). En 2025, on observe un léger rebond à 11 829 €/m² — le marché du 16e semble doucement se redresser.
+![Évolution du prix au m²](rapports/evolution_prix.png)
 
-### Les vendeurs surévaluent, mais pas toujours
+À Paris, le prix médian au m² des appartements vendus est passé de **10 904 €** en 2021 à **9 643 €** en 2024 (**-11,6 %**), avant un léger rebond à **9 762 €** en 2025 (**+1,2 %**).
 
-En comparant les prix affichés dans les annonces (13 573 €/m²) aux prix de vente réels (DVF), on constate que les vendeurs surévaluent leurs biens en moyenne de **+5.4% en 2024**. Mais ce n'était pas le cas avant : en 2020-2022, les prix réels étaient supérieurs aux annonces actuelles — la surévaluation est un phénomène récent, lié à la baisse du marché.
+Sur les 12 derniers mois, **15 secteurs sur 20** sont en hausse. Plus forte hausse : Paris 9e (**+2,9 %**). Plus forte baisse : Paris 1er (**-3,1 %**).
 
-**Point méthodo** : les données DVF sont en prix net vendeur (hors frais). Les annonces incluent les frais de notaire et d'agence. Pour rendre la comparaison fiable, j'ai ajouté ~10% aux prix DVF.
+**Contrôle de cohérence.** Pour 2025, ma table donne **9 762 €/m²** (prix médian) et **28 297 ventes** d'appartements. De leur côté, les Notaires du Grand Paris publient **9 600 €/m²** et « près de 28 000 ventes » d'appartements anciens à Paris en 2025 ([dossier de presse T4 2025](https://notairesdugrandparis.fr/sites/default/files/2026-02/Dossier%20de%20presse_T4%202025.pdf)). Les ordres de grandeur concordent, ce qui valide les règles de nettoyage.
 
-### Le DPE impacte fortement le prix
+![Tendance par secteur](rapports/tendance_secteurs.png)
 
-Les biens bien classés énergétiquement se vendent nettement plus cher. Un bien classé B atteint 17 758 €/m² contre 11 391 €/m² pour un F — soit un écart de +56%. Même entre C (12 810 €/m²) et D (12 045 €/m²), il y a 6% de différence. Dans un contexte de durcissement des réglementations énergétiques, le DPE devient un critère déterminant dans la valorisation d'un bien.
+### Ce que le modèle ne voit pas
 
-### La marge de négociation dépend de la taille du bien
-
-Sur les studios, la marge est quasi nulle (-0.2%) : le marché est tendu, peu de place pour négocier. Sur les 3-4 pièces, on peut négocier environ 3.5%. Sur les 6 pièces, jusqu'à 4%. Les très grands appartements (7 pièces) reviennent à 0% — probablement parce que ce sont des biens de prestige avec des acheteurs prêts à payer le prix affiché.
+DVF ne contient ni l'étage, ni l'état, ni le DPE, ni la vue. Deux appartements de même surface dans la même rue peuvent donc valoir ±20 % d'écart. C'est la principale limite : **avec ces seules données, une erreur médiane autour de 12,2 % est un résultat réaliste.** C'est précisément ce qu'apporte l'enrichissement IA des annonces (étage, état, DPE), et c'est la prochaine étape du projet.
 
 ---
 
-## Outils utilisés
+## v2 → v3 : ce que j'ai corrigé (et pourquoi)
 
-### Python
+En relisant la v2 avec un œil critique, et en me faisant aider de l'IA pour auditer le code, j'ai trouvé des erreurs qui rendaient certains chiffres faux.
 
-| Bibliothèque | Usage |
-|---|---|
-| `playwright` | Scraping headless — navigation, contournement anti-bot, extraction des descriptions |
-| `beautifulsoup4` | Parsing HTML complémentaire |
-| `requests` | Téléchargement automatique des fichiers DVF depuis data.gouv.fr |
-| `anthropic` | Appels API Claude pour l'enrichissement IA des descriptions |
-| `pandas` | Manipulation et nettoyage des données pour le modèle ML |
-| `numpy` | Calculs vectorisés, médianes par zone géographique |
-| `scikit-learn` | Modèles ML — `LinearRegression`, `RandomForestRegressor`, `GradientBoostingRegressor`, `cross_val_score`, `KFold`, `StandardScaler`, `Pipeline` |
-| `openpyxl` | Export Excel formaté (en-têtes colorés, hyperliens, filtres auto) |
-| `psycopg2` | Connexion Python → PostgreSQL pour l'import des CSV |
-| `csv`, `json`, `re` | Parsing CSV, parsing JSON (réponses IA), extraction regex |
-
-### Base de données et BI
-
-| Outil | Usage |
-|---|---|
-| **PostgreSQL 18** | Stockage des deux datasets (annonces + DVF) |
-| **pgAdmin 4** | Requêtes SQL, enrichissement regex, création de vues d'analyse |
-| **Power BI** | Dashboard interactif avec 4 visualisations |
-
-### Données
-
-| Source | Contenu |
-|---|---|
-| **Site leader immobilier** | 2 420 annonces avec descriptions (scraping Playwright) |
-| **DVF** (data.gouv.fr) | 38 523 transactions réelles 2020-2025 |
+| Problème en v2 | Pourquoi c'est un problème | Correction en v3 |
+|---|---|---|
+| **R² = 0,92 affiché** | La variable « prix médian du micro-quartier » était calculée *avec le prix de la vente à prédire* : c'est une **fuite de données**, le modèle voyait une partie de la réponse. | Variables disponibles uniquement *avant* la vente, test sur une période future. Le R² est plus bas, mais il est honnête. |
+| **Ventes multi-lots** | Prix total de plusieurs lots divisé par la surface d'un seul appartement : prix au m² surestimés. | Seules les ventes d'un seul logement sont gardées (avec un test automatique). |
+| **+10 % ajoutés aux prix DVF** « pour les frais » | Les prix d'annonce n'incluent jamais les frais de notaire : la « surévaluation de +5,4 % » reposait sur une hypothèse fausse. | Plus de correction arbitraire : on compare le prix demandé à l'estimation, avec une marge de négociation explicite (5 %). |
+| **Toutes les annonces placées au même point GPS** | Le modèle ne pouvait pas distinguer deux quartiers, d'où des estimations deux fois trop basses. | Chaque bien est géolocalisé (adresse, ou à défaut code postal). |
+| **Dashboard Power BI** | Axes tronqués, sommes au lieu de moyennes, petits échantillons non signalés. | Une application utilisable et des graphiques générés par le code, avec l'axe à zéro. |
+| **R² comme seule mesure** | Parlant pour un data scientist, pas pour un métier. | Erreur médiane en %, part des ventes estimées à ± 10 %, fiabilité de la fourchette. |
 
 ---
 
-## Architecture du projet
+## Comment j'ai utilisé l'IA
 
-```
-immo-hunter/
-├── README.md
-├── pipeline.py            # Entry point unifié (scrape + DVF + enrich + ML + DB)
-├── scrape.py              # Scraping → CSV
-├── predict.py             # Modèle ML (10 features, GBM + CV) → export Power BI
-├── import_db.py           # Import CSV → PostgreSQL + création des vues SQL
-├── config.py              # Ville, code postal, années DVF (configurable)
-├── requirements.txt
-├── scraper/               # Scraper Playwright
-├── enrichment/            # Enrichissement Claude API (50+ features)
-├── dvf/                   # Téléchargement DVF dynamique (API geo.gouv.fr)
-├── screenshots/           # Screenshots pour le README
-└── output/                # Données (exclu du repo)
-```
+Je l'assume : **ce projet a été construit avec l'IA**, de deux façons.
+
+1. **Comme assistant de développement (Claude).** Écrire et restructurer le code Python et SQL, auditer la v2, m'expliquer les notions que je ne maîtrisais pas encore.
+2. **Comme brique du pipeline (API Claude).** Transformer le texte libre des annonces en données structurées.
+
+**Ce qui vient de moi :**
+
+- la question métier, issue de mon expérience en agence immobilière ;
+- le choix des sources et des règles métier : ce qu'est un bien comparable, la marge de négociation, l'exclusion des ventes multi-lots ;
+- la vérification des résultats et la remise en question de la v2 ;
+- les décisions : tout Paris plutôt que le 16e seul, abandon de Power BI, modèle le plus simple quand un ajout n'apporte rien.
+
+Je ne prétends pas avoir écrit chaque ligne à la main. En revanche, je sais expliquer chaque étape, chaque choix et chaque chiffre de ce README.
 
 ---
 
-## Installation
+## Limites et prochaines étapes
+
+- **Intégrer l'enrichissement IA au modèle** pour les annonces : étage, état et DPE sont les critères qui manquent le plus.
+- **Délai de DVF** : les ventes sont publiées avec quelques mois de retard, donc la tendance « 12 derniers mois » a un temps de retard.
+- **Autres villes** : le pipeline est prêt (`config.py`), à valider hors Paris, maisons incluses.
+- **Annonces** : module d'usage personnel, dans le respect des conditions d'utilisation des sites. Les annonces collectées ne sont pas publiées dans ce dépôt.
+
+---
+
+## Lancer le projet
 
 ```bash
 git clone https://github.com/maxime-txn/immo-hunter-2.git
 cd immo-hunter-2
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 
-# Optionnel : enrichissement IA
-export ANTHROPIC_API_KEY=sk-ant-xxx
+python pipeline.py --tout      # télécharge DVF, nettoie, entraîne, génère les graphiques
+streamlit run app.py           # lance l'application en local
+pytest                         # lance les tests
 
-# Lancer le pipeline complet
-python pipeline.py --all
+# Module optionnel « annonces »
+pip install -r requirements-annonces.txt && playwright install chromium
+export ANTHROPIC_API_KEY=...   # pour l'enrichissement IA
+python pipeline.py --annonces-collecte --annonces-enrichissement
+python pipeline.py --annonces-analyse data/annonces/mon_fichier.csv
+```
+
+## Structure
+
+```
+immo-hunter-2/
+├── pipeline.py              # point d'entrée : lance chaque étape
+├── config.py                # zone, années, seuils (seul fichier à modifier pour une autre ville)
+├── app.py                   # application web (Streamlit)
+├── immohunter/
+│   ├── collecte_dvf.py      # 1. téléchargement des ventes DVF
+│   ├── nettoyage.py         # 3. règles de nettoyage
+│   ├── base.py              # 4. connexion DuckDB, exécution des requêtes SQL
+│   ├── modele.py            # 5. comparaison des modèles, entraînement, estimation
+│   ├── verdict.py           #    sous-évalué / au prix / surévalué
+│   ├── geocodage.py         #    adresse -> GPS
+│   ├── rapports.py          #    graphiques du README
+│   └── annonces/            # module optionnel : collecte, enrichissement IA, analyse en lot
+├── sql/                     # requêtes d'analyse (SQL standard)
+├── data/ventes.parquet      # table propre des ventes
+├── modeles/                 # modèle entraîné + évaluation
+├── rapports/                # graphiques
+└── tests/                   # tests automatiques
 ```
 
 ---
 
-## ⚠️ Disclaimer
-
-Ce projet est réalisé dans un cadre pédagogique et portfolio. Les données DVF sont publiques (data.gouv.fr). Les prédictions du modèle ML ne constituent pas des conseils en investissement immobilier.
-
----
-
-## Auteur
-
-**Maxime Teixeira Novais**
-M1 Data Science & BI — EDC Paris Business School
+**Maxime Teixeira** · M2 Data Science & Business Intelligence, EDC Paris Business School · en recherche d'alternance Data Analyst
+[LinkedIn](https://www.linkedin.com/in/mtxn) · Données : DVF, Licence Ouverte Etalab · Les estimations ne constituent pas un conseil en investissement.
